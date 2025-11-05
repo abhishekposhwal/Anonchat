@@ -1,4 +1,5 @@
 export const runtime = 'edge';
+export const dynamic = 'force-dynamic'; // avoid caching the upgrade route
 
 type Room = { a: WebSocket | null; b: WebSocket | null };
 const rooms = new Map<string, Room>();
@@ -8,21 +9,32 @@ function peerOther(room: Room, ws: WebSocket | null) {
 }
 
 function safeSend(ws: WebSocket | null, obj: any) {
-  try { ws && ws.readyState === ws.OPEN && ws.send(JSON.stringify(obj)); } catch {}
+  try {
+    const w: any = ws;
+    if (w && w.readyState === w.OPEN) w.send(JSON.stringify(obj));
+  } catch {}
 }
 
 export async function GET(request: Request) {
   const upgrade = (request.headers.get('upgrade') || '').toLowerCase();
   if (upgrade !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
 
-  const pair = new WebSocketPair();
-  const client = (pair as any)[0] as WebSocket;
-  const server = (pair as any)[1] as WebSocket;
+  // Use globalThis so TS doesn’t complain; Edge runtime provides WebSocketPair at runtime.
+  const WebSocketPairCtor = (globalThis as any).WebSocketPair;
+  if (!WebSocketPairCtor) {
+    return new Response('WebSocketPair not supported in this runtime', { status: 500 });
+  }
+
+  const pair = new WebSocketPairCtor();
+  const client: WebSocket = (pair as any)[0];
+  const server: WebSocket = (pair as any)[1];
+
+  // Accept server socket (cast: not in TS DOM types)
+  (server as any).accept();
 
   let roomCode: string | null = null;
-  server.accept();
 
-  server.addEventListener('message', (ev) => {
+  server.addEventListener('message', (ev: MessageEvent) => {
     let msg: any = {};
     try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ''); } catch { return; }
 
@@ -69,11 +81,12 @@ export async function GET(request: Request) {
     if (!room.a && !room.b) rooms.delete(roomCode);
   });
 
-  // keepalive
+  // Keepalive (helps some proxies keep the tunnel)
   const ping = setInterval(() => {
-    try { server.send(JSON.stringify({ type: 'sys', message: 'ping' })); } catch {}
+    try { (server as any).send(JSON.stringify({ type: 'sys', message: 'ping' })); } catch {}
   }, 30_000);
   server.addEventListener('close', () => clearInterval(ping));
 
-  return new Response(null, { status: 101, webSocket: client });
+  return new Response(null, { status: 101, webSocket: client } as any);
+
 }
