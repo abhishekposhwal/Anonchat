@@ -1,5 +1,6 @@
+// Vercel Edge WebSocket signaling for AnonChat
 export const runtime = 'edge';
-export const dynamic = 'force-dynamic'; // avoid caching the upgrade route
+export const dynamic = 'force-dynamic';
 
 type Room = { a: WebSocket | null; b: WebSocket | null };
 const rooms = new Map<string, Room>();
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
   const upgrade = (request.headers.get('upgrade') || '').toLowerCase();
   if (upgrade !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
 
-  // Use globalThis so TS doesn’t complain; Edge runtime provides WebSocketPair at runtime.
+  // Edge runtime provides WebSocketPair at runtime (not in TS DOM types)
   const WebSocketPairCtor = (globalThis as any).WebSocketPair;
   if (!WebSocketPairCtor) {
     return new Response('WebSocketPair not supported in this runtime', { status: 500 });
@@ -29,8 +30,7 @@ export async function GET(request: Request) {
   const client: WebSocket = (pair as any)[0];
   const server: WebSocket = (pair as any)[1];
 
-  // Accept server socket (cast: not in TS DOM types)
-  (server as any).accept();
+  (server as any).accept(); // required in Edge to finalize the upgrade
 
   let roomCode: string | null = null;
 
@@ -81,12 +81,12 @@ export async function GET(request: Request) {
     if (!room.a && !room.b) rooms.delete(roomCode);
   });
 
-  // Keepalive (helps some proxies keep the tunnel)
+  // keepalive pings help some proxies
   const ping = setInterval(() => {
     try { (server as any).send(JSON.stringify({ type: 'sys', message: 'ping' })); } catch {}
   }, 30_000);
   server.addEventListener('close', () => clearInterval(ping));
 
+  // TS doesn't know about webSocket in ResponseInit — cast to any
   return new Response(null, { status: 101, webSocket: client } as any);
-
 }
